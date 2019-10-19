@@ -19,6 +19,10 @@
 // to write the first five frames from "myvideofile.mpg" to disk in PPM
 // format.
 
+#ifdef _MSC_VER
+#define _CRT_SECURE_NO_WARNINGS 1
+#endif // _MSC_VER
+
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/imgutils.h>
