@@ -29,7 +29,7 @@
 
 int main(int argc, char* argv[]) {
 	if (argc < 2) {
-		fprintf(stderr, "Usage: test <file>\n");
+		fprintf(stderr, "Usage: <media file>\n");
 		return -1;
 	}
 
@@ -158,7 +158,7 @@ int main(int argc, char* argv[]) {
 		if (pkt->stream_index == video_stream_index) {
 			ret = avcodec_send_packet(pCodecCtx, pkt);
 			if (ret < 0) {
-				break;
+				continue;
 			}
 
 			while (ret >= 0) {
@@ -199,7 +199,7 @@ int main(int argc, char* argv[]) {
 			}
 		}
 		
-		av_packet_unref(pkt);
+		//av_packet_unref(pkt);
 		ret = av_read_frame(pFormatCtx, pkt);
 	}
 
