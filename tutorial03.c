@@ -103,6 +103,42 @@ int packet_queue_get(PacketQueue* q, AVPacket* pkt) {
 	return 0;
 }
 
+// func use to initialize swrcontext, which is used to rescale the planar audio to non-planar
+// audio, for SDL2.
+int init_swrctx(SwrContext* swrCtx, AVCodecContext* avctx, AVFrame* frame) {
+	
+	int index = av_get_channel_layout_channel_index(av_get_default_channel_layout(4), AV_CH_FRONT_CENTER);
+	int channels = avctx->channels;
+	Uint64 channel_layout = avctx->channel_layout;
+
+	if (channels > 0 && channel_layout == 0) {
+		channel_layout = av_get_default_channel_layout(channels);
+	}
+	else if (channels == 0 && channel_layout > 0) {
+		channels = av_get_channel_layout_nb_channels(channel_layout);
+	}
+
+	Uint64 dst_layout = av_get_default_channel_layout(channels);
+
+	swr_alloc_set_opts(
+		swrCtx,
+		dst_layout,
+		AV_SAMPLE_FMT_S16,
+		avctx->sample_rate,
+		channel_layout,
+		frame->format,
+		avctx->sample_rate,
+		0,
+		NULL
+	);
+
+	if (!swrCtx || swr_init(swrCtx) < 0) {
+		return -1;
+	}
+
+	return 0;
+}
+
 // delete the third parameter "buf_size" as it was useless.
 // we cover old data every time this function is called so we don't
 // need to know the buffer size(or current index).
@@ -117,7 +153,8 @@ int audio_decode_frame(AVCodecContext* avctx, uint8_t* audio_buf) {
 
 	// data in frame have 2 plane but SDL2 can only read data in single plane,
 	// so we have to scale the data to one plane by swrcontext.
-	SwrContext* swrCtx = swr_alloc();
+	static SwrContext* swrCtx;
+	
 	static int swr_is_init = 0;
 
 	int ret = packet_queue_get(&audioq, pkt);
@@ -136,39 +173,17 @@ int audio_decode_frame(AVCodecContext* avctx, uint8_t* audio_buf) {
 		}
 
 		// init swrcontext in the first call.
-
-		int index = av_get_channel_layout_channel_index(av_get_default_channel_layout(4), AV_CH_FRONT_CENTER);
-		int channels = avctx->channels;
-		Uint64 channel_layout = avctx->channel_layout;
-
-		if (channels > 0 && channel_layout == 0) {
-			channel_layout = av_get_default_channel_layout(channels);
-		}
-		else if (channels == 0 && channel_layout > 0) {
-			channels = av_get_channel_layout_nb_channels(channel_layout);
-		}
-
-		Uint64 dst_layout = av_get_default_channel_layout(channels);
-
-		swr_alloc_set_opts(
-			swrCtx,
-			dst_layout,
-			AV_SAMPLE_FMT_S16,
-			avctx->sample_rate,
-			channel_layout,
-			frame->format,
-			avctx->sample_rate,
-			0,
-			NULL
-		);
-
-		if (!swrCtx || swr_init(swrCtx) < 0) {
-			return -1;
+		if (!swrCtx || !swr_is_initialized(swrCtx)) {
+			swrCtx = swr_alloc();
+			ret = init_swrctx(swrCtx, avctx, frame);
+			if (ret < 0) {
+				return -1;
+			}
+			swr_is_init = 1;
 		}
 
 		int dst_nb_samples = av_rescale_rnd(swr_get_delay(swrCtx, frame->sample_rate) + frame->nb_samples
 			, frame->sample_rate, frame->sample_rate, AV_ROUND_INF);
-
 
 		int nb = swr_convert(swrCtx, &audio_buf, dst_nb_samples, (const Uint8**)frame->data, frame->nb_samples);
 		if (nb < 0) {
@@ -228,6 +243,10 @@ void audio_callback(void* userdata, Uint8* stream, int len) {
 		len -= len1;
 		audio_buf_index += len1;
 		stream += len1;
+
+		if (quit) {
+			break;
+		}
 	}
 }
 
@@ -390,7 +409,12 @@ int main(int argc, char* argv[]) {
 		.linesize[2] = uvPitch
 	};
 
+	double frame_rate = av_q2d(pFormatCtx->streams[vst_idx]->avg_frame_rate);
+	double approx_delay = 1.0 / frame_rate * 1000;
+	printf("approx delay: %f", approx_delay);
+
 	AVPacket* pkt = av_packet_alloc();
+	SDL_Event sdl_event;
 
 	int ret = av_read_frame(pFormatCtx, pkt);
 	while (ret >= 0) {
@@ -434,6 +458,9 @@ int main(int argc, char* argv[]) {
 				SDL_RenderCopy(renderer, texture, NULL, NULL);
 				SDL_RenderPresent(renderer);
 
+				// or the video will end immediately and you can hardly heard the sound.
+				SDL_Delay(approx_delay);
+
 				av_frame_unref(pFrame);
 			}
 		}
@@ -441,9 +468,22 @@ int main(int argc, char* argv[]) {
 			packet_queue_put(&audioq, pkt);
 		}
 
+		SDL_PollEvent(&sdl_event);
+		switch (sdl_event.type)
+		{
+		case SDL_QUIT:
+			quit = 1;
+		default:
+			break;
+		}
 		//av_packet_unref(pkt);
+		if (quit) {
+			break;
+		}
 		ret = av_read_frame(pFormatCtx, pkt);
 	}
+	quit = 1;
+	SDL_Quit();
 
 	// clean up
 	av_frame_free(&pFrame);
