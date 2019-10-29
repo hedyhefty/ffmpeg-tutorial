@@ -54,12 +54,11 @@ void packet_queue_init(PacketQueue* q) {
 
 int packet_queue_put(PacketQueue* q, AVPacket* pkt) {
 	AVPacketList* insertpkt = av_malloc(sizeof(AVPacketList));
-	if (!insertpkt) {
+	if (!insertpkt && av_packet_make_refcounted(pkt) < 0) {
 		return -1;
 	}
 
 	av_packet_move_ref(&insertpkt->pkt, pkt);
-
 	insertpkt->next = NULL;
 
 	SDL_LockMutex(q->mtx);
@@ -83,17 +82,23 @@ int packet_queue_put(PacketQueue* q, AVPacket* pkt) {
 
 int packet_queue_get(PacketQueue* q, AVPacket* pkt) {
 	SDL_LockMutex(q->mtx);
+	AVPacketList* hold;
 	for (;;) {
-		if (q->first_pkt) {
-			av_packet_move_ref(pkt, &q->first_pkt->pkt);
-			av_packet_unref(pkt);
-			if (q->first_pkt == q->last_pkt) {
-				q->first_pkt = NULL;
+		hold = q->first_pkt;
+		if (hold) {
+			q->first_pkt = hold->next;
+
+			// check if the queue is empty.
+			if (!q->first_pkt) {
 				q->last_pkt = NULL;
 			}
-			else {
-				q->first_pkt = q->first_pkt->next;
-			}
+			
+			--q->nb_packets;
+			q->size -= hold->pkt.size;
+			*pkt = hold->pkt;
+
+			av_free(hold);
+
 			break;
 		}
 		else {
@@ -160,6 +165,8 @@ int audio_decode_frame(AVCodecContext* avctx, uint8_t* audio_buf) {
 
 	int ret = packet_queue_get(&audioq, pkt);
 	if (ret < 0) {
+		av_packet_free(&pkt);
+		av_frame_free(&frame);
 		return -1;
 	}
 
@@ -170,6 +177,8 @@ int audio_decode_frame(AVCodecContext* avctx, uint8_t* audio_buf) {
 	if (ret >= 0) {
 		ret = avcodec_receive_frame(avctx, frame);
 		if (ret < 0) {
+			av_packet_free(&pkt);
+			av_frame_free(&frame);
 			return -1;
 		}
 
@@ -178,6 +187,8 @@ int audio_decode_frame(AVCodecContext* avctx, uint8_t* audio_buf) {
 			swrCtx = swr_alloc();
 			ret = init_swrctx(swrCtx, avctx, frame);
 			if (ret < 0) {
+				av_packet_free(&pkt);
+				av_frame_free(&frame);
 				return -1;
 			}
 			swr_is_init = 1;
@@ -188,15 +199,21 @@ int audio_decode_frame(AVCodecContext* avctx, uint8_t* audio_buf) {
 
 		int nb = swr_convert(swrCtx, &audio_buf, dst_nb_samples, (const Uint8**)frame->data, frame->nb_samples);
 		if (nb < 0) {
+			av_packet_free(&pkt);
+			av_frame_free(&frame);
 			return -1;
 		}
 
 		data_size += frame->channels * nb * av_get_bytes_per_sample(AV_SAMPLE_FMT_S16);
 		index += data_size;
 
+		av_packet_free(&pkt);
+		av_frame_free(&frame);
 		return data_size;
 	}
 
+	av_packet_free(&pkt);
+	av_frame_free(frame);
 	return -1;
 }
 
@@ -462,6 +479,7 @@ int main(int argc, char* argv[]) {
 				// or the video will end immediately and you can hardly heard the sound.
 				SDL_Delay(approx_delay);
 
+				av_packet_unref(pkt);
 				av_frame_unref(pFrame);
 			}
 		}
@@ -484,10 +502,12 @@ int main(int argc, char* argv[]) {
 		ret = av_read_frame(pFormatCtx, pkt);
 	}
 	quit = 1;
+	SDL_CondSignal(audioq.cond);
 	SDL_Quit();
 
 	// clean up
 	av_frame_free(&pFrame);
+	av_packet_free(&pkt);
 	avcodec_close(vCodecCtx);
 	avcodec_close(aCodecCtx);
 	avformat_close_input(&pFormatCtx);

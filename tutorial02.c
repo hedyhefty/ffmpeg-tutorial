@@ -195,6 +195,7 @@ int main(int argc, char* argv[]) {
 				SDL_RenderCopy(renderer, texture, NULL, NULL);
 				SDL_RenderPresent(renderer);
 
+				av_packet_unref(pkt);
 				av_frame_unref(pFrame);
 			}
 		}
@@ -205,6 +206,7 @@ int main(int argc, char* argv[]) {
 
 	// clean up
 	av_frame_free(&pFrame);
+	av_packet_free(&pkt);
 	avcodec_close(pCodecCtx);
 	avformat_close_input(&pFormatCtx);
 
