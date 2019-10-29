@@ -86,6 +86,7 @@ int packet_queue_get(PacketQueue* q, AVPacket* pkt) {
 	for (;;) {
 		if (q->first_pkt) {
 			av_packet_move_ref(pkt, &q->first_pkt->pkt);
+			av_packet_unref(pkt);
 			if (q->first_pkt == q->last_pkt) {
 				q->first_pkt = NULL;
 				q->last_pkt = NULL;
