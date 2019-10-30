@@ -501,9 +501,12 @@ int main(int argc, char* argv[]) {
 		}
 		ret = av_read_frame(pFormatCtx, pkt);
 	}
+
+	// all packets sent
 	quit = 1;
 	SDL_CondSignal(audioq.cond);
-	SDL_Quit();
+	SDL_CloseAudio(0);
+	//SDL_Quit();
 
 	// clean up
 	av_frame_free(&pFrame);
