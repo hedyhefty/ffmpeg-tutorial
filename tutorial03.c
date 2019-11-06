@@ -92,7 +92,7 @@ int packet_queue_get(PacketQueue* q, AVPacket* pkt) {
 			if (!q->first_pkt) {
 				q->last_pkt = NULL;
 			}
-			
+
 			--q->nb_packets;
 			q->size -= hold->pkt.size;
 			*pkt = hold->pkt;
@@ -112,7 +112,7 @@ int packet_queue_get(PacketQueue* q, AVPacket* pkt) {
 // func use to initialize swrcontext, which is used to rescale the planar audio to non-planar
 // audio, for SDL2.
 int init_swrctx(SwrContext* swrCtx, AVCodecContext* avctx, AVFrame* frame) {
-	
+
 	int index = av_get_channel_layout_channel_index(av_get_default_channel_layout(4), AV_CH_FRONT_CENTER);
 	int channels = avctx->channels;
 	Uint64 channel_layout = avctx->channel_layout;
@@ -160,7 +160,7 @@ int audio_decode_frame(AVCodecContext* avctx, uint8_t* audio_buf) {
 	// data in frame have 2 plane but SDL2 can only read data in single plane,
 	// so we have to scale the data to one plane by swrcontext.
 	static SwrContext* swrCtx;
-	
+
 	static int swr_is_init = 0;
 
 	int ret = packet_queue_get(&audioq, pkt);
@@ -172,14 +172,17 @@ int audio_decode_frame(AVCodecContext* avctx, uint8_t* audio_buf) {
 
 	ret = avcodec_send_packet(avctx, pkt);
 
-	int index = 0;
+	Uint8* buf = audio_buf;
 
-	if (ret >= 0) {
+	while (ret >= 0) {
 		ret = avcodec_receive_frame(avctx, frame);
-		if (ret < 0) {
+		if (ret == AVERROR(EAGAIN)) {
 			av_packet_free(&pkt);
 			av_frame_free(&frame);
-			return -1;
+			return data_size;
+		}
+		else if (ret < 0) {
+			break;
 		}
 
 		// init swrcontext in the first call.
@@ -187,33 +190,30 @@ int audio_decode_frame(AVCodecContext* avctx, uint8_t* audio_buf) {
 			swrCtx = swr_alloc();
 			ret = init_swrctx(swrCtx, avctx, frame);
 			if (ret < 0) {
-				av_packet_free(&pkt);
-				av_frame_free(&frame);
-				return -1;
+				break;
 			}
 			swr_is_init = 1;
 		}
 
-		int dst_nb_samples = av_rescale_rnd(swr_get_delay(swrCtx, frame->sample_rate) + frame->nb_samples
-			, frame->sample_rate, frame->sample_rate, AV_ROUND_INF);
-
-		int nb = swr_convert(swrCtx, &audio_buf, dst_nb_samples, (const Uint8**)frame->data, frame->nb_samples);
+		static int dst_nb_samples = 0;
+		if (dst_nb_samples == 0) {
+			dst_nb_samples = av_rescale_rnd(swr_get_delay(swrCtx, frame->sample_rate) + frame->nb_samples
+				, frame->sample_rate, frame->sample_rate, AV_ROUND_INF);
+		}
+		
+		int nb = swr_convert(swrCtx, &buf, dst_nb_samples, (const Uint8**)frame->data, frame->nb_samples);
 		if (nb < 0) {
 			av_packet_free(&pkt);
 			av_frame_free(&frame);
-			return -1;
+			break;
 		}
 
 		data_size += frame->channels * nb * av_get_bytes_per_sample(AV_SAMPLE_FMT_S16);
-		index += data_size;
-
-		av_packet_free(&pkt);
-		av_frame_free(&frame);
-		return data_size;
+		buf += data_size;
 	}
 
 	av_packet_free(&pkt);
-	av_frame_free(frame);
+	av_frame_free(&frame);
 	return -1;
 }
 
@@ -294,13 +294,13 @@ int main(int argc, char* argv[]) {
 	int vst_idx = -1;
 	int ast_idx = -1;
 
-	for (int i = 0; i < pFormatCtx->nb_streams; ++i) {
+	for (size_t i = 0; i < pFormatCtx->nb_streams; ++i) {
 		if (pFormatCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && ast_idx < 0) {
-			ast_idx = i;
+			ast_idx = (int)i;
 		}
 
 		if (pFormatCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && vst_idx < 0) {
-			vst_idx = i;
+			vst_idx = (int)i;
 		}
 	}
 
@@ -428,8 +428,7 @@ int main(int argc, char* argv[]) {
 	};
 
 	double frame_rate = av_q2d(pFormatCtx->streams[vst_idx]->avg_frame_rate);
-	double approx_delay = 1.0 / frame_rate * 1000;
-	printf("approx delay: %f", approx_delay);
+	Uint32 approx_delay = (Uint32)(1.0 / frame_rate * 1000);
 
 	AVPacket* pkt = av_packet_alloc();
 	SDL_Event sdl_event;
@@ -505,8 +504,8 @@ int main(int argc, char* argv[]) {
 	// all packets sent
 	quit = 1;
 	SDL_CondSignal(audioq.cond);
-	SDL_CloseAudio(0);
-	//SDL_Quit();
+	SDL_CloseAudio();
+	SDL_Quit();
 
 	// clean up
 	av_frame_free(&pFrame);
