@@ -74,9 +74,10 @@ int packet_queue_put(PacketQueue* q, AVPacket* pkt) {
 
 	q->size += insertpkt->pkt.size;
 	++q->nb_packets;
-
+	
 	SDL_CondSignal(q->cond);
 	SDL_UnlockMutex(q->mtx);
+	
 	return 0;
 }
 
@@ -203,8 +204,6 @@ int audio_decode_frame(AVCodecContext* avctx, uint8_t* audio_buf) {
 		
 		int nb = swr_convert(swrCtx, &buf, dst_nb_samples, (const Uint8**)frame->data, frame->nb_samples);
 		if (nb < 0) {
-			av_packet_free(&pkt);
-			av_frame_free(&frame);
 			break;
 		}
 
@@ -445,9 +444,12 @@ int main(int argc, char* argv[]) {
 
 			while (ret >= 0) {
 				ret = avcodec_receive_frame(vCodecCtx, pFrame);
-
-				if (ret < 0) {
+				if (ret == AVERROR(EAGAIN)) {
 					break;
+				}
+				else if (ret < 0) {
+					fprintf(stderr, "Error occur\n");
+					exit(EXIT_FAILURE);
 				}
 
 				sws_scale(
